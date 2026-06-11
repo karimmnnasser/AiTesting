@@ -1,0 +1,8 @@
+﻿gradio
+requests
+playwright
+pyperclip
+plyer
+pillow
+gitpython
+python-dotenv
