@@ -50,3 +50,5 @@ build/
 # 📊 ملفات الاختبار
 test.txt
 test_*.py
+!tests/test_*.py
+.aider*

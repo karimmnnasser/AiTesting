@@ -14,11 +14,30 @@ import tools.system_tools
 import tools.network_tools
 import tools.env_tools
 import tools.power_tools
+import tools.scheduled_tools
 
 from schemas.tool_schema import ToolRequest
 from core.executor import Executor
 from tools.registry import list_tools, requires_confirmation
 from providers.llm_provider import ask_llm, LOCAL_MODELS
+
+
+def format_tool_result(action, result):
+    if result.success:
+        content = result.data if result.data is not None else result.message
+        css_class = "tool-success"
+        prefix = "OK"
+    else:
+        content = result.error if result.error is not None else result.message
+        css_class = "tool-error"
+        prefix = "ERROR"
+    return f'<div class="tool-execution {css_class}">{prefix} {action}: {content}</div>'
+
+
+def execute_tool_request(action, params, confirmed=False):
+    request = ToolRequest(action=action, parameters=params)
+    executor = Executor()
+    return executor.execute(request, confirmed=confirmed)
 
 st.set_page_config(page_title="Jarvis AI", page_icon="🤖", layout="wide", initial_sidebar_state="collapsed")
 
@@ -68,6 +87,9 @@ st.markdown('<div class="chat-header"><h1>🤖 Jarvis AI</h1></div>', unsafe_all
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "pending_confirmation" not in st.session_state:
+    st.session_state.pending_confirmation = None
+
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
@@ -84,6 +106,31 @@ if len(st.session_state.messages) == 0:
     </div>
     """, unsafe_allow_html=True)
 
+if st.session_state.pending_confirmation:
+    pending = st.session_state.pending_confirmation
+    action = pending["action"]
+    params = pending["parameters"]
+
+    st.markdown(f'<div class="assistant-bubble">WARNING Tool <b>{action}</b> requires confirmation.</div>', unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Execute", key="confirm_yes", use_container_width=True):
+            try:
+                result = execute_tool_request(action, params, confirmed=True)
+                result_html = format_tool_result(action, result)
+                st.session_state.messages.append({"role": "assistant", "content": result_html})
+            except Exception as e:
+                error_html = f'<div class="tool-execution tool-error">ERROR {action}: {str(e)}</div>'
+                st.session_state.messages.append({"role": "assistant", "content": error_html})
+            st.session_state.pending_confirmation = None
+            st.rerun()
+    with col2:
+        if st.button("Cancel", key="confirm_no", use_container_width=True):
+            cancel_msg = f"Operation canceled: {action}"
+            st.session_state.messages.append({"role": "assistant", "content": cancel_msg})
+            st.session_state.pending_confirmation = None
+            st.rerun()
+
 if prompt := st.chat_input("Type your message..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -99,53 +146,31 @@ if prompt := st.chat_input("Type your message..."):
                     params = parsed_data.get("parameters", {})
                     
                     if requires_confirmation(action):
-                        warning_msg = f"⚠️ Tool **{action}** is dangerous. Do you want to proceed?"
+                        st.session_state.pending_confirmation = {
+                            "action": action,
+                            "parameters": params,
+                            "provider": provider,
+                            "original_prompt": prompt,
+                        }
+                        warning_msg = f"WARNING Tool **{action}** requires confirmation."
                         st.markdown(f'<div class="assistant-bubble">{warning_msg}</div>', unsafe_allow_html=True)
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if st.button("✅ Yes, execute", key="confirm_yes"):
-                                try:
-                                    request = ToolRequest(action=action, parameters=params)
-                                    executor = Executor()
-                                    result = executor.execute(request)
-                                    if result.success:
-                                        result_html = f'<div class="tool-execution tool-success">✅ {action}: {result.data}</div>'
-                                    else:
-                                        result_html = f'<div class="tool-execution tool-error">❌ {action}: {result.error}</div>'
-                                    st.markdown(result_html, unsafe_allow_html=True)
-                                    st.session_state.messages.append({"role": "assistant", "content": result_html})
-                                except Exception as e:
-                                    error_html = f'<div class="tool-execution tool-error">❌ Error: {str(e)}</div>'
-                                    st.markdown(error_html, unsafe_allow_html=True)
-                                    st.session_state.messages.append({"role": "assistant", "content": error_html})
-                                st.rerun()
-                        with col2:
-                            if st.button(" Cancel", key="confirm_no"):
-                                cancel_msg = "Operation canceled."
-                                st.markdown(f'<div class="assistant-bubble">{cancel_msg}</div>', unsafe_allow_html=True)
-                                st.session_state.messages.append({"role": "assistant", "content": cancel_msg})
-                                st.rerun()
-                        st.stop()
+                        st.session_state.messages.append({"role": "assistant", "content": warning_msg})
+                        st.rerun()
                     else:
                         try:
-                            request = ToolRequest(action=action, parameters=params)
-                            executor = Executor()
-                            result = executor.execute(request)
-                            if result.success:
-                                result_html = f'<div class="tool-execution tool-success">✅ {action}: {result.data}</div>'
-                            else:
-                                result_html = f'<div class="tool-execution tool-error">❌ {action}: {result.error}</div>'
+                            result = execute_tool_request(action, params)
+                            result_html = format_tool_result(action, result)
                             st.markdown(result_html, unsafe_allow_html=True)
                             st.session_state.messages.append({"role": "assistant", "content": result_html})
                         except Exception as e:
-                            error_html = f'<div class="tool-execution tool-error">❌ Error: {str(e)}</div>'
+                            error_html = f'<div class="tool-execution tool-error">ERROR {action}: {str(e)}</div>'
                             st.markdown(error_html, unsafe_allow_html=True)
                             st.session_state.messages.append({"role": "assistant", "content": error_html})
                 else:
                     st.markdown(f'<div class="assistant-bubble">{response_text}</div>', unsafe_allow_html=True)
                     st.session_state.messages.append({"role": "assistant", "content": response_text})
             except Exception as e:
-                error_msg = f"❌ Error: {str(e)}"
+                error_msg = f"ERROR: {str(e)}"
                 st.markdown(f'<div class="assistant-bubble">{error_msg}</div>', unsafe_allow_html=True)
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
     
